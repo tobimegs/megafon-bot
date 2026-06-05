@@ -125,6 +125,44 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
+    city = data.get('city', '')
+    street = data.get('street', '')
+    house = data.get('house', '')
+    apartment = data.get('apartment', '')
+    phone = data['phone']
+
+    # Основная строка для поиска
+    search_text = f"{city} {street} {house}"
+
+    addresses = load_addresses()
+    is_connected = False
+
+    for addr in addresses:
+        if normalize(search_text) in normalize(addr) or normalize(addr) in normalize(search_text):
+            is_connected = True
+            break
+
+    full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
+
+    if is_connected:
+        text = (
+            f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n"
+            f"📍 {full_address}\n"
+            f"📱 {phone}\n\n"
+            f"**Менеджер:** `89998719968`"
+        )
+        await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_address}\n{phone}")
+    else:
+        text = (
+            f"📍 Адрес принят:\n{full_address}\n"
+            f"📱 {phone}\n\n"
+            "🔍 Проверяем возможность подключения.\n"
+            "Менеджер свяжется с вами."
+        )
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
+
+    await message.answer(text, reply_markup=get_main_menu())
+
     full_text = f"{data['city']} {data['street']} {data['house']} {data.get('apartment', '')}"
     phone = data['phone']
 
