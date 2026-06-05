@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -21,7 +20,10 @@ dp = Dispatcher()
 
 
 class AddressForm(StatesGroup):
-    address = State()
+    city = State()
+    street = State()
+    house = State()
+    apartment = State()
     phone = State()
 
 
@@ -35,14 +37,6 @@ def load_addresses():
 def save_addresses(addresses):
     with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
         json.dump(addresses, f, ensure_ascii=False, indent=2)
-
-
-def normalize(text: str) -> str:
-    """Убирает заглавные буквы, запятые, точки и лишние пробелы"""
-    text = text.lower()
-    text = re.sub(r'[^\w\s]', ' ', text)   # убираем запятые, точки и т.д.
-    text = re.sub(r'\s+', ' ', text).strip()  # убираем лишние пробелы
-    return text
 
 
 def get_main_menu():
@@ -65,10 +59,10 @@ async def cmd_add_address(message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("Использование: /add_address москва ленина 25")
-    addr = parts[1].strip()
+    addr = parts[1].lower().strip()
     addresses = load_addresses()
-    if normalize(addr) in [normalize(a) for a in addresses]:
-        return await message.answer("Этот адрес уже есть в списке.")
+    if addr in addresses:
+        return await message.answer("Этот адрес уже есть.")
     addresses.append(addr)
     save_addresses(addresses)
     await message.answer(f"✅ Адрес добавлен: {addr}")
@@ -76,18 +70,35 @@ async def cmd_add_address(message: Message):
 
 @dp.callback_query(F.data == "check_address")
 async def start_check(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "📍 Введите адрес **одной строкой**.\n\n"
-        "Пример: `Москва Газгольдерная 10`\n"
-        "Или: `Москва, Ленина, д.25`"
-    )
-    await state.set_state(AddressForm.address)
+    await callback.message.edit_text("🏙️ Введите город:")
+    await state.set_state(AddressForm.city)
     await callback.answer()
 
 
-@dp.message(AddressForm.address)
-async def process_address(message: Message, state: FSMContext):
-    await state.update_data(raw_address=message.text.strip())
+@dp.message(AddressForm.city)
+async def process_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text.lower().strip())
+    await state.set_state(AddressForm.street)
+    await message.answer("🛣️ Введите улицу:")
+
+
+@dp.message(AddressForm.street)
+async def process_street(message: Message, state: FSMContext):
+    await state.update_data(street=message.text.lower().strip())
+    await state.set_state(AddressForm.house)
+    await message.answer("🏠 Введите номер дома:")
+
+
+@dp.message(AddressForm.house)
+async def process_house(message: Message, state: FSMContext):
+    await state.update_data(house=message.text.lower().strip())
+    await state.set_state(AddressForm.apartment)
+    await message.answer("🚪 Введите номер квартиры (или напишите «нет»):")
+
+
+@dp.message(AddressForm.apartment)
+async def process_apartment(message: Message, state: FSMContext):
+    await state.update_data(apartment=message.text.lower().strip())
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
@@ -98,34 +109,33 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    raw = data["raw_address"]
-    phone = data["phone"]
+    city = data['city']
+    street = data['street']
+    house = data['house']
+    apartment = data['apartment']
+    phone = data['phone']
+
+    full_address = f"{city} {street} {house}"
     addresses = load_addresses()
 
-    user_normalized = normalize(raw)
-    is_connected = False
-
-    for addr in addresses:
-        if normalize(addr) in user_normalized or user_normalized in normalize(addr):
-            is_connected = True
-            break
+    is_connected = any(addr in full_address for addr in addresses)
 
     if is_connected:
         text = (
             f"✅ **Дом подключён!**\n\n"
-            f"📍 {raw}\n"
+            f"📍 {city}, {street}, д.{house}, кв.{apartment}\n"
             f"📱 {phone}\n\n"
             f"**Менеджер:** `89998719968`"
         )
-        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{raw}\n{phone}")
+        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{city}, {street}, д.{house}\n{phone}")
     else:
         text = (
-            f"📍 Адрес принят: {raw}\n"
+            f"📍 Адрес принят:\n{city}, {street}, д.{house}, кв.{apartment}\n"
             f"📱 {phone}\n\n"
             "🔍 Проверяем возможность подключения.\n"
             "Менеджер свяжется с вами."
         )
-        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{raw}\n{phone}")
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{city}, {street}, д.{house}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
 
