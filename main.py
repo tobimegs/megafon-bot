@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -36,6 +37,14 @@ def save_addresses(addresses):
         json.dump(addresses, f, ensure_ascii=False, indent=2)
 
 
+def normalize(text: str) -> str:
+    """Убирает заглавные буквы, запятые, точки и лишние пробелы"""
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', ' ', text)   # убираем запятые, точки и т.д.
+    text = re.sub(r'\s+', ' ', text).strip()  # убираем лишние пробелы
+    return text
+
+
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
@@ -56,9 +65,9 @@ async def cmd_add_address(message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("Использование: /add_address москва ленина 25")
-    addr = parts[1].lower().strip()
+    addr = parts[1].strip()
     addresses = load_addresses()
-    if addr in addresses:
+    if normalize(addr) in [normalize(a) for a in addresses]:
         return await message.answer("Этот адрес уже есть в списке.")
     addresses.append(addr)
     save_addresses(addresses)
@@ -78,7 +87,7 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AddressForm.address)
 async def process_address(message: Message, state: FSMContext):
-    await state.update_data(raw_address=message.text.lower().strip())
+    await state.update_data(raw_address=message.text.strip())
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
@@ -93,13 +102,11 @@ async def process_phone(message: Message, state: FSMContext):
     phone = data["phone"]
     addresses = load_addresses()
 
-    # Улучшенная проверка адреса
+    user_normalized = normalize(raw)
     is_connected = False
-    for addr in addresses:
-        addr_clean = addr.lower().replace(",", " ").replace(".", " ").strip()
-        user_clean = raw.replace(",", " ").replace(".", " ").strip()
 
-        if addr_clean in user_clean or user_clean in addr_clean:
+    for addr in addresses:
+        if normalize(addr) in user_normalized or user_normalized in normalize(addr):
             is_connected = True
             break
 
