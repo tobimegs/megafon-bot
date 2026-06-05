@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -20,8 +21,7 @@ dp = Dispatcher()
 
 
 class AddressForm(StatesGroup):
-    search_query = State()
-    manual_address = State()
+    address = State()
     phone = State()
 
 
@@ -39,7 +39,7 @@ def save_addresses(addresses):
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Найти адрес", callback_data="find_address")],
+        [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
         [InlineKeyboardButton(text="📊 Тарифы", callback_data="tariffs")],
         [InlineKeyboardButton(text="📺 ТВ", callback_data="tv")]
     ])
@@ -53,70 +53,34 @@ async def cmd_start(message: Message):
 @dp.message(Command("add_address"))
 async def cmd_add_address(message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.answer("Только для владельца.")
+        return await message.answer("Команда доступна только владельцу.")
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        return await message.answer("Использование: /add_address <адрес>")
+        return await message.answer("Использование: /add_address москва ленина 25")
     addr = parts[1].lower().strip()
     addresses = load_addresses()
     if addr in addresses:
-        return await message.answer("Уже есть.")
+        return await message.answer("Этот адрес уже есть.")
     addresses.append(addr)
     save_addresses(addresses)
-    await message.answer(f"✅ Добавлен: {addr}")
+    await message.answer(f"✅ Адрес добавлен: {addr}")
 
 
-@dp.callback_query(F.data == "find_address")
-async def start_search(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "check_address")
+async def start_check(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "🔎 Введите часть адреса (минимум 2 буквы):\n"
-        "Например: `газгольдерная` или `ленина`"
+        "📍 Введите адрес **одной строкой**.\n\n"
+        "Пример: `Москва Газгольдерная 10`\n"
+        "Или: `Москва, Ленина, д.25`"
     )
-    await state.set_state(AddressForm.search_query)
+    await state.set_state(AddressForm.address)
     await callback.answer()
 
 
-@dp.message(AddressForm.search_query)
-async def search_address(message: Message, state: FSMContext):
-    query = message.text.lower().strip()
-    if len(query) < 2:
-        return await message.answer("Введите минимум 2 буквы.")
-
-    addresses = load_addresses()
-    matches = [addr for addr in addresses if query in addr]
-
-    if not matches:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Моего адреса нет", callback_data="manual_input")]
-        ])
-        await message.answer("Ничего не найдено.", reply_markup=keyboard)
-        return
-
-    buttons = [[InlineKeyboardButton(text=addr, callback_data=f"select_{addr}")] for addr in matches[:10]]
-    buttons.append([InlineKeyboardButton(text="➕ Моего адреса нет", callback_data="manual_input")])
-
-    await message.answer("Выберите адрес:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-
-@dp.callback_query(F.data.startswith("select_"))
-async def address_selected(callback: CallbackQuery, state: FSMContext):
-    address = callback.data.replace("select_", "")
-    await state.update_data(selected_address=address)
-    await state.set_state(AddressForm.phone)
-    await callback.message.edit_text(f"✅ Вы выбрали: {address}\n\n📱 Введите ваш номер телефона:")
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "manual_input")
-async def manual_input(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📍 Введите ваш адрес полностью:")
-    await state.set_state(AddressForm.manual_address)
-    await callback.answer()
-
-
-@dp.message(AddressForm.manual_address)
-async def process_manual_address(message: Message, state: FSMContext):
-    await state.update_data(manual_address=message.text.strip())
+@dp.message(AddressForm.address)
+async def process_address(message: Message, state: FSMContext):
+    raw = message.text.lower().strip()
+    await state.update_data(raw_address=raw)
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
@@ -127,22 +91,39 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    phone = data['phone']
-    address = data.get("selected_address") or data.get("manual_address", "Не указан")
+    raw = data["raw_address"]
+    phone = data["phone"]
+    addresses = load_addresses()
 
-    text = f"✅ Заявка принята!\n📍 {address}\n📱 {phone}\n\nМенеджер свяжется с вами."
-    await message.answer(text, reply_markup=get_main_menu())
-
-    # Отправляем лид владельцу
-    await bot.send_message(
-        OWNER_ID,
-        f"🆕 **Новый лид**\n\n📍 {address}\n📱 {phone}"
+    # Простая и понятная проверка
+    is_connected = any(
+        addr.replace(",", " ").replace(".", " ") in raw.replace(",", " ").replace(".", " ")
+        for addr in addresses
     )
+
+    if is_connected:
+        text = (
+            f"✅ **Дом подключён!**\n\n"
+            f"📍 {raw}\n"
+            f"📱 {phone}\n\n"
+            f"**Менеджер:** `89998719968`"
+        )
+        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{raw}\n{phone}")
+    else:
+        text = (
+            f"📍 Адрес принят: {raw}\n"
+            f"📱 {phone}\n\n"
+            "🔍 Проверяем возможность подключения.\n"
+            "Менеджер свяжется с вами."
+        )
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{raw}\n{phone}")
+
+    await message.answer(text, reply_markup=get_main_menu())
 
 
 @dp.callback_query(F.data.in_(["tariffs", "tv"]))
 async def placeholder(callback: CallbackQuery):
-    await callback.message.edit_text("Информация будет позже.")
+    await callback.message.edit_text("Информация будет добавлена позже.")
     await callback.answer()
 
 
@@ -152,4 +133,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
