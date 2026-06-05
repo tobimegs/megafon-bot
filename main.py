@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -60,7 +59,7 @@ async def cmd_add_address(message: Message):
     addr = parts[1].lower().strip()
     addresses = load_addresses()
     if addr in addresses:
-        return await message.answer("Этот адрес уже есть.")
+        return await message.answer("Этот адрес уже есть в списке.")
     addresses.append(addr)
     save_addresses(addresses)
     await message.answer(f"✅ Адрес добавлен: {addr}")
@@ -79,8 +78,7 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AddressForm.address)
 async def process_address(message: Message, state: FSMContext):
-    raw = message.text.lower().strip()
-    await state.update_data(raw_address=raw)
+    await state.update_data(raw_address=message.text.lower().strip())
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
@@ -95,11 +93,15 @@ async def process_phone(message: Message, state: FSMContext):
     phone = data["phone"]
     addresses = load_addresses()
 
-    # Простая и понятная проверка
-    is_connected = any(
-        addr.replace(",", " ").replace(".", " ") in raw.replace(",", " ").replace(".", " ")
-        for addr in addresses
-    )
+    # Улучшенная проверка адреса
+    is_connected = False
+    for addr in addresses:
+        addr_clean = addr.lower().replace(",", " ").replace(".", " ").strip()
+        user_clean = raw.replace(",", " ").replace(".", " ").strip()
+
+        if addr_clean in user_clean or user_clean in addr_clean:
+            is_connected = True
+            break
 
     if is_connected:
         text = (
