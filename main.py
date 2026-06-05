@@ -1,26 +1,19 @@
-def normalize(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r'[^\w\s]', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
 import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from openai import AsyncOpenAI
-import re
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
-openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 ADDRESSES_FILE = Path("connected_addresses.json")
 
@@ -42,30 +35,33 @@ def load_addresses():
         return json.load(f)
 
 
+def save_addresses(addresses):
+    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(addresses, f, ensure_ascii=False, indent=2)
+
+
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def is_address_connected(city: str, street: str, house: str) -> bool:
+    addresses = load_addresses()
+    search = normalize(f"{city} {street} {house}")
+    for addr in addresses:
+        if normalize(addr) in search or search in normalize(addr):
+            return True
+    return False
+
+
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
         [InlineKeyboardButton(text="📊 Тарифы", callback_data="tariffs")],
         [InlineKeyboardButton(text="📺 ТВ", callback_data="tv")]
     ])
-
-
-async def gpt_understand_address(full_text: str):
-    """GPT помогает понять, что ввёл пользователь"""
-    try:
-        response = await openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Ты эксперт по российским адресам. Извлеки город, улицу и номер дома. Верни только JSON."},
-                {"role": "user", "content": full_text}
-            ],
-            temperature=0,
-            max_tokens=150
-        )
-        import json
-        return json.loads(response.choices[0].message.content)
-    except:
-        return None
 
 
 @dp.message(Command("start"))
@@ -82,12 +78,11 @@ async def cmd_add_address(message: Message):
         return await message.answer("Использование: /add_address москва газгольдерная 10")
     addr = parts[1].strip()
     addresses = load_addresses()
-    if addr.lower() in [a.lower() for a in addresses]:
+    if normalize(addr) in [normalize(a) for a in addresses]:
         return await message.answer("Этот адрес уже есть.")
     addresses.append(addr)
-    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
-        json.dump(addresses, f, ensure_ascii=False, indent=2)
-    await message.answer(f"✅ Добавлен: {addr}")
+    save_addresses(addresses)
+    await message.answer(f"✅ Адрес добавлен: {addr}")
 
 
 @dp.callback_query(F.data == "check_address")
@@ -95,6 +90,7 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏙️ Введите город:")
     await state.set_state(AddressForm.city)
     await callback.answer()
+
 
 @dp.message(AddressForm.city)
 async def process_city(message: Message, state: FSMContext):
@@ -123,44 +119,51 @@ async def process_apartment(message: Message, state: FSMContext):
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
+
 @dp.message(AddressForm.phone)
 async def process_phone(message: Message, state: FSMContext):
     await state.update_data(phone=message.text.strip())
     data = await state.get_data()
     await state.clear()
 
-    city = data.get('city', '')
-    street = data.get('street', '')
-    house = data.get('house', '')
-    apartment = data.get('apartment', '')
+    city = data['city']
+    street = data['street']
+    house = data['house']
+    apartment = data['apartment']
     phone = data['phone']
 
     full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
-    search_text = f"{city} {street} {house}"
 
-    # Проверка через нашу функцию
-    addresses = load_addresses()
-    is_connected = False
-    for addr in addresses:
-        if normalize(search_text) in normalize(addr) or normalize(addr) in normalize(search_text):
-            is_connected = True
-            break
-
-    if is_connected:
-        text = (
-            f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n"
-            f"📍 {full_address}\n"
-            f"📱 {phone}\n\n"
-            f"**Менеджер:** `89998719968`"
-        )
+    if is_address_connected(city, street, house):
+        text = f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n📍 {full_address}\n📱 {phone}\n\n**Менеджер:** `89998719968`"
         await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_address}\n{phone}")
     else:
-        text = (
-            f"📍 Адрес принят:\n{full_address}\n"
-            f"📱 {phone}\n\n"
-            "🔍 Проверяем возможность подключения.\n"
-            "Менеджер свяжется с вами."
-        )
+        text = f"📍 Адрес принят:\n{full_address}\n📱 {phone}\n\n🔍 Проверяем..."
         await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
+
+
+@dp.callback_query(F.data == "tariffs")
+async def show_tariffs(callback: CallbackQuery):
+    text = """📊 **Актуальные тарифы МегаФон**
+
+🔥 #ДляДома Турбо — 500 Мбит/с за 310 ₽
+🔥 #ДляДома Максимум — 500 Мбит/с + 250 ТВ за 385 ₽"""
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "tv")
+async def show_tv(callback: CallbackQuery):
+    text = "📺 **ТВ от МегаФон**\n\nИнформация будет позже."
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+
+async def main():
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
