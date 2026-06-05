@@ -15,10 +15,7 @@ OWNER_ID = int(os.getenv("OWNER_ID"))
 dp = Dispatcher()
 
 # ==================== БАЗА ПОДКЛЮЧЁННЫХ АДРЕСОВ ====================
-CONNECTED_ADDRESSES = [
-    "москва газгольдерная 10",
-]
-
+from addresses import CONNECTED_ADDRESSES
 
 class AddressForm(StatesGroup):
     city = State()
