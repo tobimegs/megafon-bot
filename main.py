@@ -8,7 +8,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-
 from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
@@ -53,8 +52,36 @@ async def cmd_start(message: Message):
 @dp.message(Command("add_address"))
 async def cmd_add_address(message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.answer("Команда только для владельца.")
-    # ... (оставляем как было)
+        return await message.answer("❌ Команда только для владельца.")
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("Использование: /add_address москва газгольдерная 10")
+    addr = parts[1].strip()
+    addresses = load_addresses()
+    if addr.lower() in [a.lower() for a in addresses]:
+        return await message.answer("Этот адрес уже есть.")
+    addresses.append(addr)
+    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(addresses, f, ensure_ascii=False, indent=2)
+    await message.answer(f"✅ Адрес добавлен: {addr}")
+
+
+# ==================== GPT ПОМОЩНИК ====================
+async def gpt_parse_address(text: str):
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты эксперт по российским адресам. Распознай адрес и верни только JSON с полями: city, street, house"},
+                {"role": "user", "content": text}
+            ],
+            temperature=0,
+            max_tokens=100
+        )
+        import json
+        return json.loads(response.choices[0].message.content)
+    except:
+        return None
 
 
 @dp.callback_query(F.data == "check_address")
@@ -64,24 +91,6 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ==================== GPT РАСПОЗНАВАНИЕ ====================
-async def gpt_parse_address(text: str):
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Ты помогаешь парсить российские адреса. Верни только JSON с полями city, street, house."},
-                {"role": "user", "content": f"Распознай адрес: {text}"}
-            ],
-            temperature=0
-        )
-        import json
-        return json.loads(response.choices[0].message.content)
-    except:
-        return None
-
-
-# ==================== FSM ====================
 @dp.message(AddressForm.city)
 async def process_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text)
@@ -89,7 +98,25 @@ async def process_city(message: Message, state: FSMContext):
     await message.answer("🛣️ Введите улицу:")
 
 
-# ... (остальные process_street, process_house, process_apartment оставляем как раньше)
+@dp.message(AddressForm.street)
+async def process_street(message: Message, state: FSMContext):
+    await state.update_data(street=message.text)
+    await state.set_state(AddressForm.house)
+    await message.answer("🏠 Введите номер дома:")
+
+
+@dp.message(AddressForm.house)
+async def process_house(message: Message, state: FSMContext):
+    await state.update_data(house=message.text)
+    await state.set_state(AddressForm.apartment)
+    await message.answer("🚪 Введите номер квартиры (или «нет»):")
+
+
+@dp.message(AddressForm.apartment)
+async def process_apartment(message: Message, state: FSMContext):
+    await state.update_data(apartment=message.text)
+    await state.set_state(AddressForm.phone)
+    await message.answer("📱 Введите ваш номер телефона:")
 
 
 @dp.message(AddressForm.phone)
@@ -98,24 +125,33 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    full_text = f"{data['city']} {data['street']} {data['house']} {data.get('apartment','')}"
+    full_text = f"{data['city']} {data['street']} {data['house']} {data.get('apartment', '')}"
+    phone = data['phone']
 
-    # GPT помогает распознать
+    # GPT помогает понять адрес
     parsed = await gpt_parse_address(full_text)
-
+    
     addresses = load_addresses()
     is_connected = False
 
     if parsed:
-        search_text = f"{parsed.get('city','')} {parsed.get('street','')} {parsed.get('house','')}"
-        is_connected = any(addr in search_text.lower() for addr in [a.lower() for a in addresses])
+        search = f"{parsed.get('city','')} {parsed.get('street','')} {parsed.get('house','')}"
+        is_connected = any(a.lower() in search.lower() for a in addresses)
 
     if is_connected:
-        text = f"✅ **Дом подключён!**\n\n📍 {full_text}\n📱 {data['phone']}\n\nМенеджер: `89998719968`"
+        text = f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n📍 {full_text}\n📱 {phone}\n\n**Менеджер:** `89998719968`"
+        await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_text}\n{phone}")
     else:
-        text = f"📍 Адрес принят: {full_text}\n📱 {data['phone']}\n\n🔍 Проверяем..."
+        text = f"📍 Адрес принят: {full_text}\n📱 {phone}\n\n🔍 Проверяем возможность подключения..."
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_text}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
+
+
+@dp.callback_query(F.data.in_(["tariffs", "tv"]))
+async def placeholder(callback: CallbackQuery):
+    await callback.message.edit_text("Информация будет добавлена позже.")
+    await callback.answer()
 
 
 async def main():
