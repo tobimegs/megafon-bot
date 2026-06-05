@@ -9,11 +9,13 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 ADDRESSES_FILE = Path("connected_addresses.json")
 
@@ -47,13 +49,24 @@ def normalize(text: str) -> str:
     return text
 
 
-def is_address_connected(city: str, street: str, house: str) -> bool:
-    addresses = load_addresses()
-    search = normalize(f"{city} {street} {house}")
-    for addr in addresses:
-        if normalize(addr) in search or search in normalize(addr):
-            return True
-    return False
+async def gpt_parse_address(text: str):
+    """GPT извлекает город, улицу и дом"""
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты эксперт по российским адресам. Извлеки только город, улицу и номер дома. Верни JSON с ключами: city, street, house. Если не можешь — верни null."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0,
+            max_tokens=150
+        )
+        content = response.choices[0].message.content
+        if content and "null" not in content.lower():
+            return json.loads(content)
+        return None
+    except:
+        return None
 
 
 def get_main_menu():
@@ -134,7 +147,20 @@ async def process_phone(message: Message, state: FSMContext):
 
     full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
 
-    if is_address_connected(city, street, house):
+    # Пытаемся понять адрес через GPT
+    parsed = await gpt_parse_address(f"{city} {street} {house}")
+
+    addresses = load_addresses()
+    is_connected = False
+
+    if parsed:
+        gpt_text = f"{parsed.get('city', '')} {parsed.get('street', '')} {parsed.get('house', '')}"
+        for addr in addresses:
+            if normalize(gpt_text) in normalize(addr) or normalize(addr) in normalize(gpt_text):
+                is_connected = True
+                break
+
+    if is_connected:
         text = f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n📍 {full_address}\n📱 {phone}\n\n**Менеджер:** `89998719968`"
         await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_address}\n{phone}")
     else:
@@ -144,20 +170,9 @@ async def process_phone(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_main_menu())
 
 
-@dp.callback_query(F.data == "tariffs")
-async def show_tariffs(callback: CallbackQuery):
-    text = """📊 **Актуальные тарифы МегаФон**
-
-🔥 #ДляДома Турбо — 500 Мбит/с за 310 ₽
-🔥 #ДляДома Максимум — 500 Мбит/с + 250 ТВ за 385 ₽"""
-    await callback.message.edit_text(text)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "tv")
-async def show_tv(callback: CallbackQuery):
-    text = "📺 **ТВ от МегаФон**\n\nИнформация будет позже."
-    await callback.message.edit_text(text)
+@dp.callback_query(F.data.in_(["tariffs", "tv"]))
+async def placeholder(callback: CallbackQuery):
+    await callback.message.edit_text("Информация будет позже.")
     await callback.answer()
 
 
