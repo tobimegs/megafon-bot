@@ -1,3 +1,8 @@
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 import asyncio
 import json
 import logging
@@ -9,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from openai import AsyncOpenAI
+import re
 
 logging.basicConfig(level=logging.INFO)
 
@@ -90,34 +96,32 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddressForm.city)
     await callback.answer()
 
-
 @dp.message(AddressForm.city)
 async def process_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text)
+    await state.update_data(city=message.text.lower().strip())
     await state.set_state(AddressForm.street)
-    await message.answer("🛣️ Улица:")
+    await message.answer("🛣️ Введите улицу:")
 
 
 @dp.message(AddressForm.street)
 async def process_street(message: Message, state: FSMContext):
-    await state.update_data(street=message.text)
+    await state.update_data(street=message.text.lower().strip())
     await state.set_state(AddressForm.house)
-    await message.answer("🏠 Номер дома:")
+    await message.answer("🏠 Введите номер дома:")
 
 
 @dp.message(AddressForm.house)
 async def process_house(message: Message, state: FSMContext):
-    await state.update_data(house=message.text)
+    await state.update_data(house=message.text.lower().strip())
     await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Квартира (или «нет»):")
+    await message.answer("🚪 Введите номер квартиры (или «нет»):")
 
 
 @dp.message(AddressForm.apartment)
 async def process_apartment(message: Message, state: FSMContext):
-    await state.update_data(apartment=message.text)
+    await state.update_data(apartment=message.text.lower().strip())
     await state.set_state(AddressForm.phone)
-    await message.answer("📱 Номер телефона:")
-
+    await message.answer("📱 Введите ваш номер телефона:")
 
 @dp.message(AddressForm.phone)
 async def process_phone(message: Message, state: FSMContext):
@@ -131,18 +135,16 @@ async def process_phone(message: Message, state: FSMContext):
     apartment = data.get('apartment', '')
     phone = data['phone']
 
-    # Основная строка для поиска
+    full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
     search_text = f"{city} {street} {house}"
 
+    # Проверка через нашу функцию
     addresses = load_addresses()
     is_connected = False
-
     for addr in addresses:
         if normalize(search_text) in normalize(addr) or normalize(addr) in normalize(search_text):
             is_connected = True
             break
-
-    full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
 
     if is_connected:
         text = (
@@ -162,39 +164,3 @@ async def process_phone(message: Message, state: FSMContext):
         await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
-
-    full_text = f"{data['city']} {data['street']} {data['house']} {data.get('apartment', '')}"
-    phone = data['phone']
-
-    # GPT помогает понять адрес
-    parsed = await gpt_understand_address(full_text)
-
-    addresses = load_addresses()
-    is_connected = False
-
-    if parsed and isinstance(parsed, dict):
-        search = f"{parsed.get('city','')} {parsed.get('street','')} {parsed.get('house','')}"
-        is_connected = any(a.lower() in search.lower() for a in addresses)
-
-    if is_connected:
-        text = f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n📍 {full_text}\n📱 {phone}\n\n**Менеджер:** `89998719968`"
-        await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_text}\n{phone}")
-    else:
-        text = f"📍 Адрес принят: {full_text}\n📱 {phone}\n\n🔍 Проверяем..."
-        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_text}\n{phone}")
-
-    await message.answer(text, reply_markup=get_main_menu())
-
-
-@dp.callback_query(F.data.in_(["tariffs", "tv"]))
-async def placeholder(callback: CallbackQuery):
-    await callback.message.edit_text("Информация будет позже.")
-    await callback.answer()
-
-
-async def main():
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
