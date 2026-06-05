@@ -28,7 +28,7 @@ class AddressForm(StatesGroup):
     phone = State()
 
 
-# ==================== РАБОТА С АДРЕСАМИ ====================
+# ==================== УЛУЧШЕННАЯ РАБОТА С АДРЕСАМИ ====================
 def load_addresses():
     if not ADDRESSES_FILE.exists():
         return []
@@ -45,17 +45,21 @@ def save_addresses(addresses):
 
 
 def normalize(text: str) -> set:
-    """Очень хорошая нормализация"""
-    text = re.sub(r'[^\w\s]', ' ', text.lower())
-    text = re.sub(r'\s+', ' ', text).strip()
+    """Супер нормализация — убирает всё лишнее"""
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', ' ', text)      # убираем запятые, точки, дефисы и т.д.
+    text = re.sub(r'\s+', ' ', text).strip()  # убираем лишние пробелы
     return set(text.split())
 
 
 def is_address_connected(user_input: str) -> bool:
+    """Проверяет совпадение адреса"""
     addresses = load_addresses()
     user_words = normalize(user_input)
+
     for addr in addresses:
-        if normalize(addr).issubset(user_words):
+        addr_words = normalize(addr)
+        if addr_words.issubset(user_words) or user_words.issubset(addr_words):
             return True
     return False
 
@@ -72,7 +76,7 @@ def get_main_menu():
 # ==================== КОМАНДЫ ====================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("👋 Привет! Я бот МегаФон.\nВыбери действие:", reply_markup=get_main_menu())
+    await message.answer("👋 Привет! Выбери действие:", reply_markup=get_main_menu())
 
 
 @dp.message(Command("add_address"))
@@ -87,11 +91,11 @@ async def cmd_add_address(message: Message):
     addresses = load_addresses()
     
     if normalize(addr) in [normalize(a) for a in addresses]:
-        return await message.answer("❌ Этот адрес уже есть в списке.")
+        return await message.answer("❌ Этот адрес уже есть.")
     
     addresses.append(addr)
     save_addresses(addresses)
-    await message.answer(f"✅ Адрес успешно добавлен:\n{addr}")
+    await message.answer(f"✅ Адрес добавлен:\n{addr}")
 
 
 # ==================== FSM ====================
@@ -120,7 +124,7 @@ async def process_street(message: Message, state: FSMContext):
 async def process_house(message: Message, state: FSMContext):
     await state.update_data(house=message.text.lower().strip())
     await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Введите номер квартиры (или напишите «нет»):")
+    await message.answer("🚪 Введите номер квартиры (или «нет»):")
 
 
 @dp.message(AddressForm.apartment)
@@ -164,21 +168,9 @@ async def process_phone(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_main_menu())
 
 
-@dp.callback_query(F.data == "tariffs")
-async def show_tariffs(callback: CallbackQuery):
-    text = """📊 **Актуальные тарифы МегаФон**
-
-🔥 #ДляДома Турбо — 500 Мбит/с за 310 ₽
-🔥 #ДляДома Максимум — 500 Мбит/с + 250 ТВ за 385 ₽
-👑 VIP — 500 Мбит/с + 3 SIM за 910 ₽"""
-    await callback.message.edit_text(text)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "tv")
-async def show_tv(callback: CallbackQuery):
-    text = "📺 **ТВ от МегаФон**\n\nИнформация о каналах будет здесь."
-    await callback.message.edit_text(text)
+@dp.callback_query(F.data.in_(["tariffs", "tv"]))
+async def placeholder(callback: CallbackQuery):
+    await callback.message.edit_text("Информация будет добавлена позже.")
     await callback.answer()
 
 
