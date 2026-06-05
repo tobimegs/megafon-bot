@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -39,6 +40,12 @@ def save_addresses(addresses):
         json.dump(addresses, f, ensure_ascii=False, indent=2)
 
 
+def normalize(text: str) -> set:
+    """Убирает всё лишнее и возвращает набор слов"""
+    text = re.sub(r'[^\w\s]', ' ', text.lower())
+    return set(text.split())
+
+
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
@@ -59,9 +66,9 @@ async def cmd_add_address(message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("Использование: /add_address москва ленина 25")
-    addr = parts[1].lower().strip()
+    addr = parts[1].strip()
     addresses = load_addresses()
-    if addr in addresses:
+    if normalize(addr) in [normalize(a) for a in addresses]:
         return await message.answer("Этот адрес уже есть.")
     addresses.append(addr)
     save_addresses(addresses)
@@ -93,7 +100,7 @@ async def process_street(message: Message, state: FSMContext):
 async def process_house(message: Message, state: FSMContext):
     await state.update_data(house=message.text.lower().strip())
     await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Введите номер квартиры (или напишите «нет»):")
+    await message.answer("🚪 Введите номер квартиры (или «нет»):")
 
 
 @dp.message(AddressForm.apartment)
@@ -118,7 +125,13 @@ async def process_phone(message: Message, state: FSMContext):
     full_address = f"{city} {street} {house}"
     addresses = load_addresses()
 
-    is_connected = any(addr in full_address for addr in addresses)
+    user_words = normalize(full_address)
+    is_connected = False
+
+    for addr in addresses:
+        if normalize(addr).issubset(user_words):
+            is_connected = True
+            break
 
     if is_connected:
         text = (
