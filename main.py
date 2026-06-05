@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -20,6 +21,7 @@ dp = Dispatcher()
 
 
 class AddressForm(StatesGroup):
+    full_address = State()      # ввод одной строкой
     city = State()
     street = State()
     house = State()
@@ -40,72 +42,101 @@ def save_addresses(addresses):
 
 
 def get_main_menu():
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
         [InlineKeyboardButton(text="📊 Посмотреть актуальные тарифы", callback_data="tariffs")],
         [InlineKeyboardButton(text="📺 ТВ", callback_data="tv")]
     ])
-    return keyboard
+
+
+def get_address_input_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Ввести одной строкой", callback_data="full_address")],
+        [InlineKeyboardButton(text="📋 Ввести по шагам", callback_data="step_by_step")]
+    ])
+
+
+def parse_full_address(text: str) -> dict:
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    parts = text.split()
+
+    return {
+        "city": parts[0] if len(parts) > 0 else "",
+        "street": parts[1] if len(parts) > 1 else "",
+        "house": parts[2] if len(parts) > 2 else "",
+        "raw": text
+    }
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer(
-        "👋 Привет! Я бот для проверки подключения интернета МегаФон.\n\n"
-        "Выбери действие:",
-        reply_markup=get_main_menu()
-    )
+    await message.answer("👋 Привет! Выбери действие:", reply_markup=get_main_menu())
 
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Действие отменено.", reply_markup=get_main_menu())
+    await message.answer("❌ Отменено.", reply_markup=get_main_menu())
 
 
 @dp.message(Command("add_address"))
 async def cmd_add_address(message: Message):
     if message.from_user.id != OWNER_ID:
-        await message.answer("❌ Эта команда доступна только владельцу бота.")
-        return
+        return await message.answer("Команда только для владельца.")
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("Использование:\n`/add_address москва ленина 25`", parse_mode="Markdown")
-        return
+        return await message.answer("Использование: /add_address <адрес>")
 
-    new_address = parts[1].lower().strip()
+    new_addr = parts[1].lower().strip()
     addresses = load_addresses()
+    if new_addr in addresses:
+        return await message.answer("Адрес уже есть.")
 
-    if new_address in addresses:
-        await message.answer("Этот адрес уже есть в списке.")
-        return
-
-    addresses.append(new_address)
+    addresses.append(new_addr)
     save_addresses(addresses)
-    await message.answer(f"✅ Адрес успешно добавлен:\n`{new_address}`", parse_mode="Markdown")
+    await message.answer(f"✅ Добавлен: {new_addr}")
 
 
 @dp.callback_query(F.data == "check_address")
-async def start_check_address(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🏙️ В каком городе нужно проверить адрес?")
+async def choose_address_input(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Как хотите ввести адрес?",
+        reply_markup=get_address_input_menu()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "full_address")
+async def start_full_address(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📍 Введите адрес **одной строкой** (например: Москва Газгольдерная 10)")
+    await state.set_state(AddressForm.full_address)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "step_by_step")
+async def start_step_by_step(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🏙️ Введите город:")
     await state.set_state(AddressForm.city)
     await callback.answer()
 
 
-@dp.callback_query(F.data == "tariffs")
-async def show_tariffs(callback: CallbackQuery):
-    await callback.message.edit_text("📊 Информация о тарифах будет здесь.")
-    await callback.answer()
+@dp.message(AddressForm.full_address)
+async def process_full_address(message: Message, state: FSMContext):
+    parsed = parse_full_address(message.text)
+    await state.update_data(
+        city=parsed["city"],
+        street=parsed["street"],
+        house=parsed["house"],
+        raw_address=parsed["raw"]
+    )
+    await state.set_state(AddressForm.phone)
+    await message.answer("📱 Введите ваш номер телефона:")
 
 
-@dp.callback_query(F.data == "tv")
-async def show_tv(callback: CallbackQuery):
-    await callback.message.edit_text("📺 Информация о ТВ будет здесь.")
-    await callback.answer()
-
-
-# ==================== FSM ====================
+# ==================== Пошаговый ввод ====================
 @dp.message(AddressForm.city)
 async def process_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text.lower().strip())
@@ -124,7 +155,7 @@ async def process_street(message: Message, state: FSMContext):
 async def process_house(message: Message, state: FSMContext):
     await state.update_data(house=message.text.lower().strip())
     await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Введите номер квартиры (или напишите «нет»):")
+    await message.answer("🚪 Введите номер квартиры (или «нет»):")
 
 
 @dp.message(AddressForm.apartment)
@@ -134,37 +165,36 @@ async def process_apartment(message: Message, state: FSMContext):
     await message.answer("📱 Введите ваш номер телефона:")
 
 
+# ==================== Финальная обработка ====================
 @dp.message(AddressForm.phone)
 async def process_phone(message: Message, state: FSMContext):
     await state.update_data(phone=message.text.strip())
     data = await state.get_data()
     await state.clear()
 
-    full_address = f"{data['city']} {data['street']} {data['house']}"
     phone = data['phone']
+    raw = data.get("raw_address", f"{data.get('city','')} {data.get('street','')} {data.get('house','')}")
     addresses = load_addresses()
 
-    is_connected = any(addr in full_address for addr in addresses)
+    is_connected = any(
+        addr.replace(",", " ").replace(".", " ") in raw.replace(",", " ").replace(".", " ")
+        for addr in addresses
+    )
 
     if is_connected:
-        text = (
-            f"✅ **Дом подключён!**\n\n"
-            f"📍 {full_address}\n"
-            f"📱 {phone}\n\n"
-            f"**Свяжитесь с менеджером:**\n"
-            f"📞 `89998719968`"
-        )
-        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{full_address}\n{phone}")
+        text = f"✅ **Дом подключён!**\n📍 {raw}\n📱 {phone}\n\nМенеджер: `89998719968`"
+        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{raw}\n{phone}")
     else:
-        text = (
-            f"📍 Адрес принят: {full_address}\n"
-            f"📱 {phone}\n\n"
-            "🔍 Проверяем возможность подключения.\n"
-            "Менеджер свяжется с вами."
-        )
-        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
+        text = f"📍 Адрес принят: {raw}\n📱 {phone}\n\nПроверяем подключение..."
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{raw}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
+
+
+@dp.callback_query(F.data.in_(["tariffs", "tv"]))
+async def placeholder(callback: CallbackQuery):
+    await callback.message.edit_text("Информация будет добавлена позже.")
+    await callback.answer()
 
 
 async def main():
@@ -173,4 +203,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
