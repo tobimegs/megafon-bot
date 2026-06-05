@@ -10,14 +10,13 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, C
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
+OWNER_ID = int(os.getenv("OWNER_ID"))
+
 dp = Dispatcher()
 
-# ==================== ТВОЯ БАЗА ПОДКЛЮЧЁННЫХ АДРЕСОВ ====================
-# Сюда потом будешь добавлять новые адреса
+# ==================== БАЗА ПОДКЛЮЧЁННЫХ АДРЕСОВ ====================
 CONNECTED_ADDRESSES = [
-    "москва газгольдерная 10",           # ← пример адреса
-    # "москва ленина 15",                # ← сюда будешь добавлять новые
-    # "москва пушкина 7",
+    "москва газгольдерная 10",
 ]
 
 
@@ -26,6 +25,7 @@ class AddressForm(StatesGroup):
     street = State()
     house = State()
     apartment = State()
+    phone = State()
 
 
 def get_main_menu():
@@ -96,28 +96,53 @@ async def process_house(message: Message, state: FSMContext):
 @dp.message(AddressForm.apartment)
 async def process_apartment(message: Message, state: FSMContext):
     await state.update_data(apartment=message.text.lower().strip())
+    await state.set_state(AddressForm.phone)
+    await message.answer("📱 Введите ваш номер телефона для связи:")
+
+
+@dp.message(AddressForm.phone)
+async def process_phone(message: Message, state: FSMContext):
+    await state.update_data(phone=message.text.strip())
     data = await state.get_data()
     await state.clear()
 
-    # Собираем адрес в одну строку
-    full_address = f"{data['city']} {data['street']} {data['house']}"
+    full_address = f"{data['city']} {data['street']} {data['house']}, кв. {data['apartment']}"
+    phone = data['phone']
 
-    # Проверяем, есть ли адрес в твоей базе
+    # Проверяем, подключён ли адрес
     is_connected = any(addr in full_address for addr in CONNECTED_ADDRESSES)
 
     if is_connected:
-        await message.answer(
-            f"✅ **Отлично!** Дом по адресу подключён к МегаФон.\n\n"
-            f"📍 {full_address}\n\n"
-            "Менеджер скоро свяжется с вами."
+        text = (
+            f"✅ **Отлично! Дом подключён к МегаФон.**\n\n"
+            f"📍 {full_address}\n"
+            f"📱 Ваш номер: {phone}\n\n"
+            f"**Менеджер свяжется с вами:**\n"
+            f"📞 `89998719968`"
         )
-        # Здесь потом будем отправлять лид тебе
+        # Отправляем уведомление тебе
+        await bot.send_message(
+            OWNER_ID,
+            f"🆕 **Новый лид (подключённый адрес)**\n\n"
+            f"📍 {full_address}\n"
+            f"📱 {phone}"
+        )
     else:
-        await message.answer(
-            f"📍 Адрес принят: {full_address}\n\n"
-            "🔍 Сейчас проверяем возможность подключения...\n"
+        text = (
+            f"📍 Адрес принят: {full_address}\n"
+            f"📱 Номер: {phone}\n\n"
+            "🔍 Проверяем возможность подключения.\n"
             "Менеджер свяжется с вами в ближайшее время."
         )
+        # Отправляем уведомление тебе
+        await bot.send_message(
+            OWNER_ID,
+            f"🆕 **Новый лид**\n\n"
+            f"📍 {full_address}\n"
+            f"📱 {phone}"
+        )
+
+    await message.answer(text, reply_markup=get_main_menu())
 
 
 async def main():
