@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -21,11 +20,8 @@ dp = Dispatcher()
 
 
 class AddressForm(StatesGroup):
-    full_address = State()      # ввод одной строкой
-    city = State()
-    street = State()
-    house = State()
-    apartment = State()
+    search_query = State()
+    manual_address = State()
     phone = State()
 
 
@@ -43,31 +39,10 @@ def save_addresses(addresses):
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
-        [InlineKeyboardButton(text="📊 Посмотреть актуальные тарифы", callback_data="tariffs")],
+        [InlineKeyboardButton(text="🔎 Найти адрес", callback_data="find_address")],
+        [InlineKeyboardButton(text="📊 Тарифы", callback_data="tariffs")],
         [InlineKeyboardButton(text="📺 ТВ", callback_data="tv")]
     ])
-
-
-def get_address_input_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Ввести одной строкой", callback_data="full_address")],
-        [InlineKeyboardButton(text="📋 Ввести по шагам", callback_data="step_by_step")]
-    ])
-
-
-def parse_full_address(text: str) -> dict:
-    text = text.lower().strip()
-    text = re.sub(r'[^\w\s]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    parts = text.split()
-
-    return {
-        "city": parts[0] if len(parts) > 0 else "",
-        "street": parts[1] if len(parts) > 1 else "",
-        "house": parts[2] if len(parts) > 2 else "",
-        "raw": text
-    }
 
 
 @dp.message(Command("start"))
@@ -75,97 +50,77 @@ async def cmd_start(message: Message):
     await message.answer("👋 Привет! Выбери действие:", reply_markup=get_main_menu())
 
 
-@dp.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Отменено.", reply_markup=get_main_menu())
-
-
 @dp.message(Command("add_address"))
 async def cmd_add_address(message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.answer("Команда только для владельца.")
-
+        return await message.answer("Только для владельца.")
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("Использование: /add_address <адрес>")
-
-    new_addr = parts[1].lower().strip()
+    addr = parts[1].lower().strip()
     addresses = load_addresses()
-    if new_addr in addresses:
-        return await message.answer("Адрес уже есть.")
-
-    addresses.append(new_addr)
+    if addr in addresses:
+        return await message.answer("Уже есть.")
+    addresses.append(addr)
     save_addresses(addresses)
-    await message.answer(f"✅ Добавлен: {new_addr}")
+    await message.answer(f"✅ Добавлен: {addr}")
 
 
-@dp.callback_query(F.data == "check_address")
-async def choose_address_input(callback: CallbackQuery):
+@dp.callback_query(F.data == "find_address")
+async def start_search(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "Как хотите ввести адрес?",
-        reply_markup=get_address_input_menu()
+        "🔎 Введите часть адреса (минимум 2 буквы):\n"
+        "Например: `газгольдерная` или `ленина`"
     )
+    await state.set_state(AddressForm.search_query)
     await callback.answer()
 
 
-@dp.callback_query(F.data == "full_address")
-async def start_full_address(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📍 Введите адрес **одной строкой** (например: Москва Газгольдерная 10)")
-    await state.set_state(AddressForm.full_address)
+@dp.message(AddressForm.search_query)
+async def search_address(message: Message, state: FSMContext):
+    query = message.text.lower().strip()
+    if len(query) < 2:
+        return await message.answer("Введите минимум 2 буквы.")
+
+    addresses = load_addresses()
+    matches = [addr for addr in addresses if query in addr]
+
+    if not matches:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Моего адреса нет", callback_data="manual_input")]
+        ])
+        await message.answer("Ничего не найдено.", reply_markup=keyboard)
+        return
+
+    buttons = [[InlineKeyboardButton(text=addr, callback_data=f"select_{addr}")] for addr in matches[:10]]
+    buttons.append([InlineKeyboardButton(text="➕ Моего адреса нет", callback_data="manual_input")])
+
+    await message.answer("Выберите адрес:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@dp.callback_query(F.data.startswith("select_"))
+async def address_selected(callback: CallbackQuery, state: FSMContext):
+    address = callback.data.replace("select_", "")
+    await state.update_data(selected_address=address)
+    await state.set_state(AddressForm.phone)
+    await callback.message.edit_text(f"✅ Вы выбрали: {address}\n\n📱 Введите ваш номер телефона:")
     await callback.answer()
 
 
-@dp.callback_query(F.data == "step_by_step")
-async def start_step_by_step(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🏙️ Введите город:")
-    await state.set_state(AddressForm.city)
+@dp.callback_query(F.data == "manual_input")
+async def manual_input(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📍 Введите ваш адрес полностью:")
+    await state.set_state(AddressForm.manual_address)
     await callback.answer()
 
 
-@dp.message(AddressForm.full_address)
-async def process_full_address(message: Message, state: FSMContext):
-    parsed = parse_full_address(message.text)
-    await state.update_data(
-        city=parsed["city"],
-        street=parsed["street"],
-        house=parsed["house"],
-        raw_address=parsed["raw"]
-    )
+@dp.message(AddressForm.manual_address)
+async def process_manual_address(message: Message, state: FSMContext):
+    await state.update_data(manual_address=message.text.strip())
     await state.set_state(AddressForm.phone)
     await message.answer("📱 Введите ваш номер телефона:")
 
 
-# ==================== Пошаговый ввод ====================
-@dp.message(AddressForm.city)
-async def process_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text.lower().strip())
-    await state.set_state(AddressForm.street)
-    await message.answer("🛣️ Введите улицу:")
-
-
-@dp.message(AddressForm.street)
-async def process_street(message: Message, state: FSMContext):
-    await state.update_data(street=message.text.lower().strip())
-    await state.set_state(AddressForm.house)
-    await message.answer("🏠 Введите номер дома:")
-
-
-@dp.message(AddressForm.house)
-async def process_house(message: Message, state: FSMContext):
-    await state.update_data(house=message.text.lower().strip())
-    await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Введите номер квартиры (или «нет»):")
-
-
-@dp.message(AddressForm.apartment)
-async def process_apartment(message: Message, state: FSMContext):
-    await state.update_data(apartment=message.text.lower().strip())
-    await state.set_state(AddressForm.phone)
-    await message.answer("📱 Введите ваш номер телефона:")
-
-
-# ==================== Финальная обработка ====================
 @dp.message(AddressForm.phone)
 async def process_phone(message: Message, state: FSMContext):
     await state.update_data(phone=message.text.strip())
@@ -173,27 +128,21 @@ async def process_phone(message: Message, state: FSMContext):
     await state.clear()
 
     phone = data['phone']
-    raw = data.get("raw_address", f"{data.get('city','')} {data.get('street','')} {data.get('house','')}")
-    addresses = load_addresses()
+    address = data.get("selected_address") or data.get("manual_address", "Не указан")
 
-    is_connected = any(
-        addr.replace(",", " ").replace(".", " ") in raw.replace(",", " ").replace(".", " ")
-        for addr in addresses
-    )
-
-    if is_connected:
-        text = f"✅ **Дом подключён!**\n📍 {raw}\n📱 {phone}\n\nМенеджер: `89998719968`"
-        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{raw}\n{phone}")
-    else:
-        text = f"📍 Адрес принят: {raw}\n📱 {phone}\n\nПроверяем подключение..."
-        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{raw}\n{phone}")
-
+    text = f"✅ Заявка принята!\n📍 {address}\n📱 {phone}\n\nМенеджер свяжется с вами."
     await message.answer(text, reply_markup=get_main_menu())
+
+    # Отправляем лид владельцу
+    await bot.send_message(
+        OWNER_ID,
+        f"🆕 **Новый лид**\n\n📍 {address}\n📱 {phone}"
+    )
 
 
 @dp.callback_query(F.data.in_(["tariffs", "tv"]))
 async def placeholder(callback: CallbackQuery):
-    await callback.message.edit_text("Информация будет добавлена позже.")
+    await callback.message.edit_text("Информация будет позже.")
     await callback.answer()
 
 
@@ -203,3 +152,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
