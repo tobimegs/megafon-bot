@@ -1,18 +1,21 @@
 import asyncio
+import json
 import logging
 import os
+import re
+from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-from addresses import add_address, is_address_connected, load_addresses
-
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
+
+ADDRESSES_FILE = Path("connected_addresses.json")
 
 dp = Dispatcher()
 
@@ -23,6 +26,23 @@ class AddressForm(StatesGroup):
     house = State()
     apartment = State()
     phone = State()
+
+
+def load_addresses():
+    if not ADDRESSES_FILE.exists():
+        return []
+    with open(ADDRESSES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_addresses(addresses):
+    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(addresses, f, ensure_ascii=False, indent=2)
+
+
+def normalize(text: str) -> set:
+    text = re.sub(r'[^\w\s]', ' ', text.lower())
+    return set(text.split())
 
 
 def get_main_menu():
@@ -42,15 +62,16 @@ async def cmd_start(message: Message):
 async def cmd_add_address(message: Message):
     if message.from_user.id != OWNER_ID:
         return await message.answer("Команда доступна только владельцу.")
-
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("Использование: /add_address москва ленина 25")
-
-    if add_address(parts[1]):
-        await message.answer(f"✅ Адрес добавлен: {parts[1]}")
-    else:
-        await message.answer("Этот адрес уже есть в списке.")
+    addr = parts[1].strip()
+    addresses = load_addresses()
+    if normalize(addr) in [normalize(a) for a in addresses]:
+        return await message.answer("Этот адрес уже есть.")
+    addresses.append(addr)
+    save_addresses(addresses)
+    await message.answer(f"✅ Адрес добавлен: {addr}")
 
 
 @dp.callback_query(F.data == "check_address")
@@ -101,8 +122,16 @@ async def process_phone(message: Message, state: FSMContext):
     phone = data['phone']
 
     full_address = f"{city} {street} {house}"
+    addresses = load_addresses()
 
-    if is_address_connected(full_address):
+    is_connected = False
+    user_words = normalize(full_address)
+    for addr in addresses:
+        if normalize(addr).issubset(user_words):
+            is_connected = True
+            break
+
+    if is_connected:
         text = (
             f"✅ **Дом подключён!**\n\n"
             f"📍 {city}, {street}, д.{house}, кв.{apartment}\n"
@@ -122,9 +151,23 @@ async def process_phone(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_main_menu())
 
 
-@dp.callback_query(F.data.in_(["tariffs", "tv"]))
-async def placeholder(callback: CallbackQuery):
-    await callback.message.edit_text("Информация будет добавлена позже.")
+@dp.callback_query(F.data == "tariffs")
+async def show_tariffs(callback: CallbackQuery):
+    text = """📊 **Актуальные тарифы МегаФон**
+
+🔥 #ДляДома Турбо — 500 Мбит/с за 310 ₽
+🔥 #ДляДома Максимум — 500 Мбит/с + 250 ТВ за 385 ₽
+🔥 Тариф «Максимум» — 500 Мбит/с + SIM за 700 ₽
+👑 «VIP» — 500 Мбит/с + 3 SIM за 910 ₽"""
+
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "tv")
+async def show_tv(callback: CallbackQuery):
+    text = "📺 **ТВ от МегаФон**\n\nИнформация о пакетах каналов будет здесь."
+    await callback.message.edit_text(text)
     await callback.answer()
 
 
