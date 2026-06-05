@@ -2,18 +2,19 @@ import asyncio
 import json
 import logging
 import os
-import re
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
+openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 ADDRESSES_FILE = Path("connected_addresses.json")
 
@@ -35,36 +36,30 @@ def load_addresses():
         return json.load(f)
 
 
-def save_addresses(addresses):
-    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
-        json.dump(addresses, f, ensure_ascii=False, indent=2)
-
-
-def normalize(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r'[^\w\s]', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-
-def is_address_connected(city: str, street: str, house: str) -> bool:
-    """Сравнивает только город + улица + дом"""
-    addresses = load_addresses()
-    search = normalize(f"{city} {street} {house}")
-
-    for addr in addresses:
-        addr_clean = normalize(addr)
-        if addr_clean in search or search in addr_clean:
-            return True
-    return False
-
-
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить адрес", callback_data="check_address")],
         [InlineKeyboardButton(text="📊 Тарифы", callback_data="tariffs")],
         [InlineKeyboardButton(text="📺 ТВ", callback_data="tv")]
     ])
+
+
+async def gpt_understand_address(full_text: str):
+    """GPT помогает понять, что ввёл пользователь"""
+    try:
+        response = await openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты эксперт по российским адресам. Извлеки город, улицу и номер дома. Верни только JSON."},
+                {"role": "user", "content": full_text}
+            ],
+            temperature=0,
+            max_tokens=150
+        )
+        import json
+        return json.loads(response.choices[0].message.content)
+    except:
+        return None
 
 
 @dp.message(Command("start"))
@@ -81,11 +76,12 @@ async def cmd_add_address(message: Message):
         return await message.answer("Использование: /add_address москва газгольдерная 10")
     addr = parts[1].strip()
     addresses = load_addresses()
-    if normalize(addr) in [normalize(a) for a in addresses]:
+    if addr.lower() in [a.lower() for a in addresses]:
         return await message.answer("Этот адрес уже есть.")
     addresses.append(addr)
-    save_addresses(addresses)
-    await message.answer(f"✅ Адрес добавлен: {addr}")
+    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(addresses, f, ensure_ascii=False, indent=2)
+    await message.answer(f"✅ Добавлен: {addr}")
 
 
 @dp.callback_query(F.data == "check_address")
@@ -97,30 +93,30 @@ async def start_check(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AddressForm.city)
 async def process_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text.lower().strip())
+    await state.update_data(city=message.text)
     await state.set_state(AddressForm.street)
-    await message.answer("🛣️ Введите улицу:")
+    await message.answer("🛣️ Улица:")
 
 
 @dp.message(AddressForm.street)
 async def process_street(message: Message, state: FSMContext):
-    await state.update_data(street=message.text.lower().strip())
+    await state.update_data(street=message.text)
     await state.set_state(AddressForm.house)
-    await message.answer("🏠 Введите номер дома:")
+    await message.answer("🏠 Номер дома:")
 
 
 @dp.message(AddressForm.house)
 async def process_house(message: Message, state: FSMContext):
-    await state.update_data(house=message.text.lower().strip())
+    await state.update_data(house=message.text)
     await state.set_state(AddressForm.apartment)
-    await message.answer("🚪 Введите номер квартиры (или «нет»):")
+    await message.answer("🚪 Квартира (или «нет»):")
 
 
 @dp.message(AddressForm.apartment)
 async def process_apartment(message: Message, state: FSMContext):
-    await state.update_data(apartment=message.text.lower().strip())
+    await state.update_data(apartment=message.text)
     await state.set_state(AddressForm.phone)
-    await message.answer("📱 Введите ваш номер телефона:")
+    await message.answer("📱 Номер телефона:")
 
 
 @dp.message(AddressForm.phone)
@@ -129,38 +125,32 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    city = data['city']
-    street = data['street']
-    house = data['house']
-    apartment = data['apartment']
+    full_text = f"{data['city']} {data['street']} {data['house']} {data.get('apartment', '')}"
     phone = data['phone']
 
-    full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
+    # GPT помогает понять адрес
+    parsed = await gpt_understand_address(full_text)
 
-    # Проверяем только до дома
-    if is_address_connected(city, street, house):
-        text = (
-            f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n"
-            f"📍 {full_address}\n"
-            f"📱 {phone}\n\n"
-            f"**Менеджер:** `89998719968`"
-        )
-        await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_address}\n{phone}")
+    addresses = load_addresses()
+    is_connected = False
+
+    if parsed and isinstance(parsed, dict):
+        search = f"{parsed.get('city','')} {parsed.get('street','')} {parsed.get('house','')}"
+        is_connected = any(a.lower() in search.lower() for a in addresses)
+
+    if is_connected:
+        text = f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n📍 {full_text}\n📱 {phone}\n\n**Менеджер:** `89998719968`"
+        await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_text}\n{phone}")
     else:
-        text = (
-            f"📍 Адрес принят:\n{full_address}\n"
-            f"📱 {phone}\n\n"
-            "🔍 Проверяем возможность подключения.\n"
-            "Менеджер свяжется с вами."
-        )
-        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
+        text = f"📍 Адрес принят: {full_text}\n📱 {phone}\n\n🔍 Проверяем..."
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_text}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
 
 
 @dp.callback_query(F.data.in_(["tariffs", "tv"]))
 async def placeholder(callback: CallbackQuery):
-    await callback.message.edit_text("Информация будет добавлена позже.")
+    await callback.message.edit_text("Информация будет позже.")
     await callback.answer()
 
 
