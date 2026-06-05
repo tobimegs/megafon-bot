@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -12,10 +14,10 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
 
+ADDRESSES_FILE = Path("connected_addresses.json")
+
 dp = Dispatcher()
 
-# ==================== БАЗА ПОДКЛЮЧЁННЫХ АДРЕСОВ ====================
-from addresses import CONNECTED_ADDRESSES
 
 class AddressForm(StatesGroup):
     city = State()
@@ -23,6 +25,18 @@ class AddressForm(StatesGroup):
     house = State()
     apartment = State()
     phone = State()
+
+
+def load_addresses():
+    if not ADDRESSES_FILE.exists():
+        return []
+    with open(ADDRESSES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_addresses(addresses):
+    with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(addresses, f, ensure_ascii=False, indent=2)
 
 
 def get_main_menu():
@@ -47,6 +61,29 @@ async def cmd_start(message: Message):
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Действие отменено.", reply_markup=get_main_menu())
+
+
+@dp.message(Command("add_address"))
+async def cmd_add_address(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("❌ Эта команда доступна только владельцу бота.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование:\n`/add_address москва ленина 25`", parse_mode="Markdown")
+        return
+
+    new_address = parts[1].lower().strip()
+    addresses = load_addresses()
+
+    if new_address in addresses:
+        await message.answer("Этот адрес уже есть в списке.")
+        return
+
+    addresses.append(new_address)
+    save_addresses(addresses)
+    await message.answer(f"✅ Адрес успешно добавлен:\n`{new_address}`", parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "check_address")
@@ -94,7 +131,7 @@ async def process_house(message: Message, state: FSMContext):
 async def process_apartment(message: Message, state: FSMContext):
     await state.update_data(apartment=message.text.lower().strip())
     await state.set_state(AddressForm.phone)
-    await message.answer("📱 Введите ваш номер телефона для связи:")
+    await message.answer("📱 Введите ваш номер телефона:")
 
 
 @dp.message(AddressForm.phone)
@@ -103,41 +140,29 @@ async def process_phone(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    full_address = f"{data['city']} {data['street']} {data['house']}, кв. {data['apartment']}"
+    full_address = f"{data['city']} {data['street']} {data['house']}"
     phone = data['phone']
+    addresses = load_addresses()
 
-    # Проверяем, подключён ли адрес
-    is_connected = any(addr in full_address for addr in CONNECTED_ADDRESSES)
+    is_connected = any(addr in full_address for addr in addresses)
 
     if is_connected:
         text = (
-            f"✅ **Отлично! Дом подключён к МегаФон.**\n\n"
+            f"✅ **Дом подключён!**\n\n"
             f"📍 {full_address}\n"
-            f"📱 Ваш номер: {phone}\n\n"
-            f"**Менеджер свяжется с вами:**\n"
+            f"📱 {phone}\n\n"
+            f"**Свяжитесь с менеджером:**\n"
             f"📞 `89998719968`"
         )
-        # Отправляем уведомление тебе
-        await bot.send_message(
-            OWNER_ID,
-            f"🆕 **Новый лид (подключённый адрес)**\n\n"
-            f"📍 {full_address}\n"
-            f"📱 {phone}"
-        )
+        await bot.send_message(OWNER_ID, f"🆕 Лид (подключён)\n{full_address}\n{phone}")
     else:
         text = (
             f"📍 Адрес принят: {full_address}\n"
-            f"📱 Номер: {phone}\n\n"
+            f"📱 {phone}\n\n"
             "🔍 Проверяем возможность подключения.\n"
-            "Менеджер свяжется с вами в ближайшее время."
+            "Менеджер свяжется с вами."
         )
-        # Отправляем уведомление тебе
-        await bot.send_message(
-            OWNER_ID,
-            f"🆕 **Новый лид**\n\n"
-            f"📍 {full_address}\n"
-            f"📱 {phone}"
-        )
+        await bot.send_message(OWNER_ID, f"🆕 Новый лид\n{full_address}\n{phone}")
 
     await message.answer(text, reply_markup=get_main_menu())
 
@@ -148,3 +173,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
