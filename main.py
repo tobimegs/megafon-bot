@@ -41,24 +41,20 @@ def save_addresses(addresses):
 
 
 def normalize(text: str) -> str:
-    """Максимально агрессивная нормализация"""
     text = text.lower()
-    text = re.sub(r'[^\w\s]', ' ', text)      # убираем все знаки
-    text = re.sub(r'\s+', ' ', text).strip()  # убираем лишние пробелы
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
-def is_address_connected(user_input: str) -> bool:
+def is_address_connected(city: str, street: str, house: str) -> bool:
+    """Сравнивает только город + улица + дом"""
     addresses = load_addresses()
-    user_clean = normalize(user_input)
+    search = normalize(f"{city} {street} {house}")
 
     for addr in addresses:
         addr_clean = normalize(addr)
-        # Если хотя бы часть адреса из базы есть в введённом
-        if addr_clean in user_clean or user_clean in addr_clean:
-            return True
-        # Дополнительная проверка по словам
-        if set(addr_clean.split()).issubset(set(user_clean.split())):
+        if addr_clean in search or search in addr_clean:
             return True
     return False
 
@@ -139,19 +135,20 @@ async def process_phone(message: Message, state: FSMContext):
     apartment = data['apartment']
     phone = data['phone']
 
-    full_address = f"{city} {street} {house} {apartment}"
+    full_address = f"{city}, {street}, д.{house}, кв.{apartment}"
 
-    if is_address_connected(full_address):
+    # Проверяем только до дома
+    if is_address_connected(city, street, house):
         text = (
             f"✅ **ДОМ ПОДКЛЮЧЁН!**\n\n"
-            f"📍 {city}, {street}, д.{house}, кв.{apartment}\n"
+            f"📍 {full_address}\n"
             f"📱 {phone}\n\n"
             f"**Менеджер:** `89998719968`"
         )
         await bot.send_message(OWNER_ID, f"🆕 ЛИД (ПОДКЛЮЧЁН)\n{full_address}\n{phone}")
     else:
         text = (
-            f"📍 Адрес принят:\n{city}, {street}, д.{house}, кв.{apartment}\n"
+            f"📍 Адрес принят:\n{full_address}\n"
             f"📱 {phone}\n\n"
             "🔍 Проверяем возможность подключения.\n"
             "Менеджер свяжется с вами."
