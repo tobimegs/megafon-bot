@@ -1,2 +1,4 @@
 aiogram[fast]
-openai
+python-telegram-bot==20.7
+openai==1.6.1
+python-dotenv==1.0.0
